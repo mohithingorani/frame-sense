@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: facestream
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d facestream"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    # MediaPipe publishes Linux wheels for amd64; on Apple Silicon the default
+    # arm64 image often has no matching wheel and pip fails. Force amd64 here.
+    platform: linux/amd64
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/facestream
+      MAX_FRAME_BYTES: 2097152
+      MAX_WIDTH: 1920
+      MAX_HEIGHT: 1080
+      MAX_FPS_PER_CLIENT: 12
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_API_HTTP: http://localhost:8000
+      VITE_API_WS: ws://localhost:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

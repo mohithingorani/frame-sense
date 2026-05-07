@@ -4,6 +4,8 @@ Real-time face detection and tracking application with WebSocket streaming.
 
 ## Architecture
 
+![Architecture](./assets/architecture.png)
+
 | Layer | Technology |
 |-------|------------|
 | Frontend | React + TypeScript + Vite + Tailwind CSS |

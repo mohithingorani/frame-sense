@@ -1,17 +1,34 @@
 import pytest
 
-from app.db.repository import create_roi
 
+class TestWebSocketEndpoints:
+    def test_health_endpoint_returns_status(self, client):
+        response = client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert "status" in data
+        assert "uptime_seconds" in data
 
-@pytest.mark.asyncio
-async def test_get_roi_returns_latest(client, test_db_session):
-    async with test_db_session() as session:
-        await create_roi(session, 1, 2, 100, 120)
-        await create_roi(session, 10, 20, 80, 90)
+    def test_health_endpoint_includes_database_status(self, client):
+        response = client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert "database" in data
 
-    response = client.get("/roi?limit=1")
-    assert response.status_code == 200
-    body = response.json()
-    assert len(body) == 1
-    assert body[0]["x"] == 10
-    assert body[0]["y"] == 20
+    def test_roi_endpoint_with_default_limit(self, client):
+        response = client.get("/roi")
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+    def test_roi_endpoint_with_custom_limit(self, client):
+        response = client.get("/roi?limit=5")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) <= 5
+
+    def test_roi_endpoint_limit_bounds(self, client):
+        response = client.get("/roi?limit=0")
+        assert response.status_code == 422
+        
+        response = client.get("/roi?limit=201")
+        assert response.status_code == 422

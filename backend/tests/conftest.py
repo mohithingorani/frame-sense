@@ -1,5 +1,4 @@
 import os
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -10,6 +9,7 @@ os.environ["ENABLE_PROCESSOR"] = "false"
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
+
 
 @pytest.fixture()
 async def test_db_session():
@@ -34,3 +34,11 @@ async def test_db_session():
 def client(test_db_session):
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture()
+def mock_roi_data():
+    return [
+        {"x": 100, "y": 50, "width": 200, "height": 200},
+        {"x": 120, "y": 80, "width": 180, "height": 180},
+    ]

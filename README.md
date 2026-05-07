@@ -20,6 +20,9 @@ Real-time face detection and tracking application with WebSocket streaming.
 - Frame validation (dimensions, format)
 - Camera switching for multi-camera devices
 - Auto-reconnection on WebSocket disconnect
+- Loading states and error handling UI
+- Camera selector dropdown
+- React ErrorBoundary for graceful error recovery
 
 ## Quick Start
 
@@ -55,10 +58,21 @@ npm run dev
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /health | Health check |
-| GET | /roi | List detection ROIs (supports `?limit=N`) |
+| GET | /health | Health check (returns status, database, processor, uptime) |
+| GET | /roi | List detection ROIs (supports `?limit=1-200`) |
 | WebSocket | /stream/input | Stream video frames to server |
 | WebSocket | /stream/output | Receive processed frames |
+
+### Health Response
+
+```json
+{
+  "status": "ok",
+  "database": "healthy",
+  "processor": "enabled",
+  "uptime_seconds": 3600.5
+}
+```
 
 ### WebSocket Protocol
 
@@ -90,6 +104,19 @@ npm run dev
 | invalid_frame | Unable to decode frame as image |
 | frame_dimensions_exceeded | Frame exceeds MAX_WIDTH or MAX_HEIGHT |
 | processing_error | Server-side processing error |
+
+### Input Error Responses
+
+| Error | Description |
+|-------|-------------|
+| frame_too_large | Frame exceeds MAX_FRAME_BYTES |
+| rate_limited | Client FPS exceeds MAX_FPS_PER_CLIENT |
+
+### ROI Query Parameters
+
+| Param | Valid Range | Default |
+|-------|-------------|---------|
+| limit | 1-200 | 20 |
 
 ## Environment Variables
 

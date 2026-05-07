@@ -14,6 +14,15 @@ async def create_roi(session: AsyncSession, x: int, y: int, width: int, height: 
     return row
 
 
+async def create_roi_batch(session: AsyncSession, rois: list[dict]) -> list[ROI]:
+    if not rois:
+        return []
+    rows = [ROI(timestamp=datetime.now(timezone.utc), **roi) for roi in rois]
+    session.add_all(rows)
+    await session.commit()
+    return rows
+
+
 async def list_roi(session: AsyncSession, limit: int = 50) -> list[ROI]:
     stmt = select(ROI).order_by(desc(ROI.timestamp)).limit(limit)
     result = await session.execute(stmt)

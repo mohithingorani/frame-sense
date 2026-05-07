@@ -17,6 +17,9 @@ type FrameOutput = {
 
 const API_WS = import.meta.env.VITE_API_WS || 'ws://localhost:8000'
 
+const MAX_RECONNECT_ATTEMPTS = 5
+const RECONNECT_DELAY_MS = 2000
+
 function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -25,6 +28,9 @@ function App() {
   const timerRef = useRef<number | null>(null)
   const startedAtRef = useRef<number>(Date.now())
   const framesSentRef = useRef<number>(0)
+  const reconnectAttemptsRef = useRef<number>(0)
+  const isStreamActiveRef = useRef<boolean>(true)
+  const currentDeviceIdRef = useRef<string | null>(null)
 
   const [status, setStatus] = useState('connecting')
   const [processedFrame, setProcessedFrame] = useState('')
@@ -32,12 +38,65 @@ function App() {
   const [roi, setRoi] = useState<ROI | null>(null)
   const [resolution, setResolution] = useState('640 x 480')
   const [fps, setFps] = useState(0)
+  const [availableCameras, setAvailableCameras] = useState<{ id: string; label: string }[]>([])
 
-  useEffect(() => {
+  const cleanupConnections = () => {
+    if (timerRef.current) {
+      window.clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    if (inputSocketRef.current) {
+      inputSocketRef.current.close()
+      inputSocketRef.current = null
+    }
+    if (outputSocketRef.current) {
+      outputSocketRef.current.close()
+      outputSocketRef.current = null
+    }
+  }
+
+  const stopStream = () => {
+    isStreamActiveRef.current = false
+    cleanupConnections()
+    if (videoRef.current?.srcObject) {
+      const tracks = (videoRef.current.srcObject as MediaStream).getTracks()
+      tracks.forEach((track) => track.stop())
+      videoRef.current.srcObject = null
+    }
+    setStreaming(false)
+    setStatus('stopped')
+    startedAtRef.current = Date.now()
+    framesSentRef.current = 0
+    setFps(0)
+  }
+
+  const switchCamera = async () => {
+    const cameras = await navigator.mediaDevices.enumerateDevices()
+    const videoDevices = cameras.filter((d) => d.kind === 'videoinput')
+    setAvailableCameras(videoDevices.map((d) => ({ id: d.deviceId, label: d.label || `Camera ${d.deviceId.slice(0, 8)}` })))
+
+    const currentIndex = videoDevices.findIndex((d) => d.deviceId === currentDeviceIdRef.current)
+    const nextIndex = (currentIndex + 1) % videoDevices.length
+    const nextDeviceId = videoDevices[nextIndex]?.deviceId
+
+    if (!nextDeviceId) return
+
+    stopStream()
+    currentDeviceIdRef.current = nextDeviceId
+    startStream(nextDeviceId)
+  }
+
+  const startStream = async (deviceId?: string) => {
+    isStreamActiveRef.current = true
     let mediaStream: MediaStream | undefined
 
-    const start = async () => {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: deviceId ? { deviceId: { exact: deviceId } } : true,
+        audio: false,
+      })
+      currentDeviceIdRef.current = mediaStream.getVideoTracks()[0]?.getSettings().deviceId || null
+
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream
         videoRef.current.onloadedmetadata = () => {
@@ -47,13 +106,19 @@ function App() {
         videoRef.current.onplay = () => setStreaming(true)
         videoRef.current.onerror = () => setStatus('camera_error')
       }
+    } catch {
+      setStatus('camera_error')
+      return
+    }
 
+    const connectWebSockets = () => {
       const inputWs = new WebSocket(`${API_WS}/stream/input`)
       const outputWs = new WebSocket(`${API_WS}/stream/output`)
       inputSocketRef.current = inputWs
       outputSocketRef.current = outputWs
 
       outputWs.onopen = () => {
+        reconnectAttemptsRef.current = 0
         outputWs.send('ready')
       }
 
@@ -68,6 +133,24 @@ function App() {
         } else if (data.note === 'no_face') {
           setStatus('no_face')
           setRoi(null)
+        } else if (data.note === 'processing_error') {
+          setStatus('processing_error')
+        }
+      }
+
+      outputWs.onerror = () => {
+        if (isStreamActiveRef.current && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+          reconnectAttemptsRef.current++
+          setStatus('reconnecting')
+          setTimeout(connectWebSockets, RECONNECT_DELAY_MS)
+        }
+      }
+
+      outputWs.onclose = () => {
+        if (isStreamActiveRef.current && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+          reconnectAttemptsRef.current++
+          setStatus('reconnecting')
+          setTimeout(connectWebSockets, RECONNECT_DELAY_MS)
         }
       }
 
@@ -109,11 +192,24 @@ function App() {
         timerRef.current = window.setInterval(sendFrame, 100)
       }
 
-      inputWs.onclose = () => setStatus('input_disconnected')
-      outputWs.onclose = () => setStatus('output_disconnected')
+      inputWs.onerror = () => {
+        if (isStreamActiveRef.current && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+          reconnectAttemptsRef.current++
+          setStatus('reconnecting')
+          setTimeout(connectWebSockets, RECONNECT_DELAY_MS)
+        }
+      }
+
+      inputWs.onclose = () => {
+        if (isStreamActiveRef.current && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+          reconnectAttemptsRef.current++
+          setStatus('reconnecting')
+          setTimeout(connectWebSockets, RECONNECT_DELAY_MS)
+        }
+      }
     }
 
-    start().catch(() => setStatus('camera_error'))
+    connectWebSockets()
 
     return () => {
       if (timerRef.current) {
@@ -123,10 +219,17 @@ function App() {
       outputSocketRef.current?.close()
       mediaStream?.getTracks().forEach((track) => track.stop())
     }
+  }
+
+  useEffect(() => {
+    startStream()
+    return () => {
+      stopStream()
+    }
   }, [])
 
   const isConnected = useMemo(
-    () => !['camera_error', 'input_disconnected', 'output_disconnected'].includes(status),
+    () => !['camera_error', 'input_disconnected', 'output_disconnected', 'stopped'].includes(status),
     [status],
   )
 
@@ -189,8 +292,18 @@ function App() {
 
         <footer className="flex flex-wrap items-center justify-between border-t border-slate-200 px-6 py-4 text-sm">
           <div className="flex gap-3">
-            <button className="rounded-lg bg-slate-900 px-6 py-2 font-medium text-white">Stop Stream</button>
-            <button className="rounded-lg border border-slate-300 px-6 py-2 font-medium text-slate-700">Switch Camera</button>
+            <button
+              onClick={stopStream}
+              className="rounded-lg bg-slate-900 px-6 py-2 font-medium text-white hover:bg-slate-800"
+            >
+              Stop Stream
+            </button>
+            <button
+              onClick={switchCamera}
+              className="rounded-lg border border-slate-300 px-6 py-2 font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Switch Camera
+            </button>
           </div>
           <div className="mt-3 flex gap-8 text-slate-600 md:mt-0">
             <p>FPS <span className="font-semibold text-slate-900">{fps}</span></p>
